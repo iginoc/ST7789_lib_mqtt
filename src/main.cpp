@@ -1,4 +1,49 @@
+// ST7789 library example
+// Amiga Boing Ball Demo
+// (c) 2019-24 Pawel A. Hernik
+// YT video: https://youtu.be/KwtkfmglT-c
+// Added support for LCD height 320,280,240
+// Optimized ball refresh from 61 to 39ms
 
+/*
+ST7789 240x240 1.3" IPS (without CS pin) - only 4+2 wires required:
+ #01 GND -> GND
+ #02 VCC -> VCC (3.3V only!)
+ #03 SCL -> D13/SCK
+ #04 SDA -> D11/MOSI
+ #05 RES -> D9 /PA0 or any digital (HW RESET is required to properly initialize LCD without CS)
+ #06 DC  -> D10/PA1 or any digital
+ #07 BLK -> NC
+
+ST7789 240x280 1.69" IPS - only 4+2 wires required:
+ #01 GND -> GND
+ #02 VCC -> VCC (3.3V only!)
+ #03 SCL -> D13/SCK
+ #04 SDA -> D11/MOSI
+ #05 RES -> optional
+ #06 DC  -> D10 or any digital
+ #07 CS  -> D9 or any digital
+ #08 BLK -> VCC
+
+ST7789 170x320 1.9" IPS - only 4+2 wires required:
+ #01 GND -> GND
+ #02 VCC -> VCC (3.3V only!)
+ #03 SCL -> D13/SCK
+ #04 SDA -> D11/MOSI
+ #05 RES -> optional
+ #06 DC  -> D10 or any digital
+ #07 CS  -> D9 or any digital
+ #08 BLK -> VCC
+
+ST7789 240x320 2.0" IPS - only 4+2 wires required:
+ #01 GND -> GND
+ #02 VCC -> VCC (3.3V only!)
+ #03 SCL -> D13/SCK
+ #04 SDA -> D11/MOSI
+ #05 RES -> optional
+ #06 DC  -> D10 or any digital
+ #07 CS  -> D9 or any digital
+*/
 
 #include <SPI.h>
 #include <Adafruit_GFX.h>
@@ -136,11 +181,6 @@ void setup()
   
   // 1. Inizializza il display
   lcd.init(SCR_WD, SCR_HT);
-  lcd.fillScreen(BLACK);
-  lcd.setTextColor(WHITE);
-  lcd.setTextSize(2);
-  lcd.setCursor(10, 10);
-  lcd.println("Avvio Sistema...");
 
   // Carica configurazione
   EEPROM.get(0, conf);
@@ -160,15 +200,15 @@ void setup()
   // Inizializza i buffer dei messaggi
   for (int i = 0; i < NUM_TOPICS; i++) {
     strcpy(lastMsgs[i], "In attesa...");
+    msgChanged[i] = false;
   }
 
   // Inizializza Ethernet
   // Configurazione con IP Statico per risparmiare memoria FLASH.
   // La chiamata a Ethernet.begin(mac) che attiva il DHCP è stata rimossa.
-  lcd.println("Uso IP Statico...");
-  IPAddress ip(10,42,0,242);
-  IPAddress dns(192,168,188,41);
-  IPAddress gateway(10,42,0,1);
+  IPAddress ip(192,168,188,199);
+  IPAddress dns(192,168,188,41); // Usa il gateway come DNS
+  IPAddress gateway(192,168,188,1);
   IPAddress subnet(255, 255, 255, 0);
   Ethernet.begin(mac, ip, dns, gateway, subnet);
   
@@ -178,7 +218,6 @@ void setup()
   mqttClient.setServer(conf.mqttServer, 1883);
   mqttClient.setCallback(callback);
 
-  lcd.fillScreen(bgCol);
   lastActivityTime = millis(); // Inizializza il timer
 }
 
@@ -373,27 +412,122 @@ void loop()
 
   // Disegna solo se qualcosa è cambiato
   if (anyChange) {
-    const char* topics[] = { conf.mqttTopic, conf.mqttTopic2, conf.mqttTopic3, conf.mqttTopic4, conf.mqttTopic5 };
+    const char* topics[] = {conf.mqttTopic, conf.mqttTopic2, conf.mqttTopic3, conf.mqttTopic4, conf.mqttTopic5};
+
+    // Definizioni del layout
+    const int16_t box_spacing = 5;
+    const int16_t small_box_w = (SCR_WD - 3 * box_spacing) / 2;
+    const int16_t small_box_h = 60;
+    const int16_t row1_y = box_spacing;
+    const int16_t row2_y = row1_y + small_box_h + box_spacing;
+    const int16_t row3_y = row2_y + small_box_h + box_spacing;
+    const int16_t large_box_h = SCR_HT - row3_y - box_spacing;
+
+    // Coordinate dei box [x, y, w, h]
+    const int16_t box_coords[NUM_TOPICS][4] = {
+        {box_spacing, row1_y, small_box_w, small_box_h},                                 // Box 1
+        {2 * box_spacing + small_box_w, row1_y, small_box_w, small_box_h},                // Box 2
+        {box_spacing, row2_y, small_box_w, small_box_h},                                 // Box 3
+        {2 * box_spacing + small_box_w, row2_y, small_box_w, small_box_h},                // Box 4
+        {box_spacing, row3_y, SCR_WD - 2 * box_spacing, large_box_h} // Box 5
+    };
+
+    if (forceRedraw) {
+      lcd.fillScreen(bgCol);
+      for (int i = 0; i < NUM_TOPICS; i++) {
+        if (strlen(topics[i]) > 0) {
+          lcd.drawRect(box_coords[i][0], box_coords[i][1], box_coords[i][2], box_coords[i][3], YELLOW);
+          msgChanged[i] = true; // Forza l'aggiornamento del contenuto
+        }
+      }
+      forceRedraw = false;
+    }
+
+    lcd.setFont(&FreeSansBold12pt7b);
+    lcd.setTextSize(1);
+    lcd.setTextColor(YELLOW);
 
     for (int i = 0; i < NUM_TOPICS; i++) {
-      if (strlen(topics[i]) > 0) {
-        // Stima lo spazio minimo e interrompi se non c'è
-        // Altezza font: size*8 pixel. Spazio extra: 15 pixel.
-        int required_space = (4 * 8) + 15; // valore(size 4) + spazio
-        if (lcd.getCursorY() > SCR_HT - required_space) {
-          break;
+      if (msgChanged[i] && strlen(topics[i]) > 0) {
+        int16_t box_x = box_coords[i][0];
+        int16_t box_y = box_coords[i][1];
+        int16_t box_w = box_coords[i][2];
+        int16_t box_h = box_coords[i][3];
+
+        // Pulisci l'area interna del riquadro
+        lcd.fillRect(box_x + 1, box_y + 1, box_w - 2, box_h - 2, bgCol);
+
+        if (i < 4) { // Sensori 1-4
+          // Centra e disegna il nuovo testo (singola riga)
+          int16_t x1, y1;
+          uint16_t w, h;
+          lcd.getTextBounds(lastMsgs[i], 0, 0, &x1, &y1, &w, &h);
+          int16_t text_x = box_x + (box_w - w) / 2 - x1;
+          int16_t text_y = box_y + (box_h - h) / 2 - y1;
+
+          lcd.setCursor(text_x, text_y);
+          lcd.print(lastMsgs[i]);
+        } else { // Sensore 5 (con word wrap)
+          char buffer[50];
+          strncpy(buffer, lastMsgs[i], 49);
+          buffer[49] = '\0';
+
+          char *words[10]; // Max 10 words
+          int word_count = 0;
+          char *word = strtok(buffer, " ");
+          while (word != NULL && word_count < 10) {
+            words[word_count++] = word;
+            word = strtok(NULL, " ");
+          }
+
+          char line1[50] = "";
+          char line2[50] = "";
+          int current_line = 1;
+          int16_t x1, y1;
+          uint16_t w, h;
+
+          for (int j = 0; j < word_count; j++) {
+            char temp_line[50];
+            if (current_line == 1) strcpy(temp_line, line1);
+            else strcpy(temp_line, line2);
+
+            if (strlen(temp_line) > 0) strcat(temp_line, " ");
+            strcat(temp_line, words[j]);
+
+            lcd.getTextBounds(temp_line, 0, 0, &x1, &y1, &w, &h);
+
+            if (w > (uint16_t)(box_w - 4)) { // -4 per padding
+              if (current_line == 1) {
+                current_line = 2;
+                if (strlen(words[j]) < 50) strcpy(line2, words[j]);
+              }
+            } else {
+              if (current_line == 1) { if (strlen(temp_line) < 50) strcpy(line1, temp_line); } 
+              else { if (strlen(temp_line) < 50) strcpy(line2, temp_line); }
+            }
+          }
+
+          // Disegna le righe centrate
+          lcd.getTextBounds("A", 0, 0, &x1, &y1, &w, &h);
+          uint16_t line_height = h;
+          int16_t text_block_top;
+
+          if (strlen(line2) > 0) text_block_top = box_y + (box_h - (2 * line_height + 4)) / 2;
+          else text_block_top = box_y + (box_h - line_height) / 2;
+
+          lcd.getTextBounds(line1, 0, 0, &x1, &y1, &w, &h);
+          lcd.setCursor(box_x + (box_w - w) / 2 - x1, text_block_top - y1);
+          lcd.print(line1);
+
+          if (strlen(line2) > 0) {
+            lcd.getTextBounds(line2, 0, 0, &x1, &y1, &w, &h);
+            lcd.setCursor(box_x + (box_w - w) / 2 - x1, text_block_top - y1 + line_height + 4);
+            lcd.print(line2);
+          }
         }
 
-        lcd.setCursor(10, lcd.getCursorY()); // Allinea il valore del messaggio
-        lcd.setTextSize(4); // Aumentato da 3 per maggiore leggibilità
-        lcd.setTextColor(YELLOW);
-        lcd.println(lastMsgs[i]);
-        
-        // Aggiungi uno spazio maggiore e posizionati per il prossimo blocco
-        lcd.setCursor(10, lcd.getCursorY() + 15); // Aumentato per distanziare
+        msgChanged[i] = false;
       }
     }
-    msgChanged = false; // Reset del flag
   }
-
 }
